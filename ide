@@ -1,0 +1,349 @@
+#include <DynamixelShield.h>        //다이나믹셀 라이브러리
+#include <LiquidCrystal_I2C.h>      //LCD 1602 I2C용 라이브러리
+#include <Wire.h>                   //i2c 통신을 위한 라이브러리
+LiquidCrystal_I2C lcd(0x3F, 16, 2); //접근 주소
+
+#if defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_MEGA2560)
+#include <SoftwareSerial.h>
+SoftwareSerial soft_serial(10, 11); // DYNAMIXELShield UART RX/TX
+#define DEBUG_SERIAL soft_serial
+#elif defined(ARDUINO_SAM_DUE) || defined(ARDUINO_SAM_ZERO)
+#define DEBUG_SERIAL SerialUSB
+#else
+#define DEBUG_SERIAL Serial
+#endif
+
+//각 다이나믹셀의 ID 입력
+const uint8_t DXL_ID1 = 1;     // 1번 관절
+const uint8_t DXL_ID2 = 2;     // 2번 관절
+const uint8_t DXL_ID3 = 3;     // 엔드 이팩터
+const uint8_t DXL_ID4 = 4;     // 레일 우측
+const uint8_t DXL_ID5 = 5;     // 레일 좌측
+const float DXL_PROTOCOL_VERSION = 2.0;
+
+uint32_t profile_velocity = 50;   // 로봇 팔 1, 2번 관절 모터 속도 값
+uint32_t profile_velocity_2 = 10;
+
+
+DynamixelShield dxl;
+using namespace ControlTableItem;    //다이나믹셀 포지션 모드의 속도 조절용 네임스페이스
+
+//조이스틱
+int x = A14;     // x, y는 아날로그 핀
+int y = A15;
+int z = 23;     // z는 디지털 핀
+int x_stick_state = 0;
+int left_right_state = 0;
+
+//택트 스위치
+int sw = 24;
+ 
+
+//초기 모터각도 설정(로봇 팔)
+void setting(){
+  dxl.setGoalPosition(DXL_ID1, 180.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID2, 180.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID3, 180.0, UNIT_DEGREE);
+}
+
+
+
+//술 따르는 과정 후 로봇 팔 위치복귀
+void Arm_back(){
+  dxl.setGoalPosition(DXL_ID1, 180.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID2, 180.0, UNIT_DEGREE);
+  delay(1500);
+  dxl.setGoalPosition(DXL_ID3, 180.0, UNIT_DEGREE);
+}
+
+
+//로봇팔 작동과정(술병 집기)
+void ArmOperate_1() {
+  dxl.setGoalPosition(DXL_ID3, 165.0, UNIT_DEGREE);
+  delay(1000);
+  dxl.setGoalPosition(DXL_ID1, 255.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID2, 195.0, UNIT_DEGREE);
+  delay(1500);
+  dxl.setGoalPosition(DXL_ID3, 186.0, UNIT_DEGREE);
+  delay(1000);
+  dxl.setGoalPosition(DXL_ID1, 180.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID2, 270.0, UNIT_DEGREE);
+}
+
+//로봇팔 작동과정(컵에 따르기) --> k값에 술 따르는 시간 입력
+void ArmOperate_2(int k) {
+  dxl.setGoalPosition(DXL_ID2, 230.0, UNIT_DEGREE);
+  delay(2000);
+  dxl.setGoalPosition(DXL_ID2, 165.0, UNIT_DEGREE);
+  delay(k);
+  dxl.writeControlTableItem(PROFILE_VELOCITY, DXL_ID2, profile_velocity_2);
+  dxl.setGoalPosition(DXL_ID2, 230.0, UNIT_DEGREE);
+  dxl.writeControlTableItem(PROFILE_VELOCITY, DXL_ID2, profile_velocity);
+  delay(2500);
+  dxl.setGoalPosition(DXL_ID1, 180.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID2, 270.0, UNIT_DEGREE);
+}
+
+//로봇팔 작동과정(술병 놓기)
+void ArmOperate_3() {
+  dxl.setGoalPosition(DXL_ID1, 255.0, UNIT_DEGREE);
+  dxl.setGoalPosition(DXL_ID2, 195.0, UNIT_DEGREE);
+  delay(1500);
+  dxl.setGoalPosition(DXL_ID3, 165.0, UNIT_DEGREE);
+}
+
+//레일 이동 과정(전진) --> a값에 이동 시간 입력
+void RailMove_front(int a) {
+  dxl.setGoalVelocity(DXL_ID4, -15.0, UNIT_PERCENT); 
+  dxl.setGoalVelocity(DXL_ID5, 15.0, UNIT_PERCENT);
+  delay(a);
+  dxl.setGoalVelocity(DXL_ID4, 0.0, UNIT_PERCENT); 
+  dxl.setGoalVelocity(DXL_ID5, 0.0, UNIT_PERCENT);
+}
+
+
+//레일 이동 과정(후진) --> a값에 이동 시간 입력
+void RailMove_back(int a){
+  dxl.setGoalVelocity(DXL_ID4, 15.0, UNIT_PERCENT); 
+  dxl.setGoalVelocity(DXL_ID5, -15.0, UNIT_PERCENT);
+  delay(a);
+  dxl.setGoalVelocity(DXL_ID4, 0.0, UNIT_PERCENT); 
+  dxl.setGoalVelocity(DXL_ID5, 0.0, UNIT_PERCENT);
+}
+
+//술 종류에 따른 로봇 팔 작동과정------------------------------------------------------------------------
+void vodka(int a){
+  ArmOperate_1();
+  delay(2000);
+  RailMove_front(3000); //컵까지 이동
+  delay(2000);
+  ArmOperate_2(a); //()안에 보드카 양 입력
+  delay(2000);
+  RailMove_back(3000); //보드카 위치(초기 위치)로 이동
+  delay(2000);
+  ArmOperate_3();
+  delay(2000);
+  Arm_back();
+  delay(2000);
+}
+
+void orangejuice(int a){
+  RailMove_front(1800); //오렌지주스 위치로 이동
+  delay(2000);
+  ArmOperate_1();
+  delay(2000);
+  RailMove_front(1200); //컵 위치로 이동
+  delay(2000);
+  ArmOperate_2(a); //()안에 오랜지주스 양 입력
+  delay(2000);
+  RailMove_back(1200); //오렌지주스 위치로 이동
+  delay(2000);
+  ArmOperate_3();
+  delay(2000);
+  Arm_back();
+  delay(2000);
+  RailMove_back(1800);//초기 위치로 이동
+  delay(2000);
+}
+
+void peachtree(int a){
+  RailMove_front(4000); //피치트리 위치로 이동
+  delay(2000);
+  ArmOperate_1();
+  delay(2000);
+  RailMove_back(1000); //컵 위치로 이동
+  delay(2000);
+  ArmOperate_2(a); //()안에 피치트리 양 입력
+  delay(2000);
+  RailMove_front(1000); //피치트리 위치로 이동
+  delay(2000);
+  ArmOperate_3();
+  delay(2000);
+  Arm_back();
+  delay(2000);
+  RailMove_back(4000); //초기 위치로 이동
+  delay(2000);
+}
+
+void cranberry(int a){
+  RailMove_front(5800); //크렌베리 위치로 이동
+  delay(2000);
+  ArmOperate_1();
+  delay(2000);
+  RailMove_back(2800); //컵 위치로 이동
+  delay(2000);
+  ArmOperate_2(a); //()안에 크렌베리 양 입력
+  delay(2000);
+  RailMove_front(2800); //크렌베리 위치로 이동
+  delay(2000);
+  ArmOperate_3();
+  delay(2000);
+  Arm_back();
+  delay(2000);
+  RailMove_back(5800); //초기 위치로 이동
+  delay(2000);
+}
+//--------------------------------------------------------------------------------------------------------
+
+
+void setup() {
+  //다이나믹셀 및 시리얼 통신 속도 지정
+  DEBUG_SERIAL.begin(115200);
+  dxl.begin(115200);
+
+  //다이나믹셀 프로토콜 버전 입력
+  dxl.setPortProtocolVersion(DXL_PROTOCOL_VERSION);
+
+  dxl.ping(DXL_ID1);
+  dxl.ping(DXL_ID2);
+  dxl.ping(DXL_ID3);
+  dxl.ping(DXL_ID4);
+  dxl.ping(DXL_ID5);
+
+  //다이나믹셀 작동 모드 지정 및 토크 켜는 과정
+  dxl.torqueOff(DXL_ID1);
+  dxl.setOperatingMode(DXL_ID1, OP_POSITION);
+  dxl.torqueOn(DXL_ID1);
+
+  dxl.torqueOff(DXL_ID2);
+  dxl.setOperatingMode(DXL_ID2, OP_POSITION);
+  dxl.torqueOn(DXL_ID2);
+
+  dxl.torqueOff(DXL_ID3);
+  dxl.setOperatingMode(DXL_ID3, OP_POSITION);
+  dxl.torqueOn(DXL_ID3);
+
+  dxl.torqueOff(DXL_ID4);
+  dxl.setOperatingMode(DXL_ID4, OP_VELOCITY);
+  dxl.torqueOn(DXL_ID4);
+
+  dxl.torqueOff(DXL_ID5);
+  dxl.setOperatingMode(DXL_ID5, OP_VELOCITY);
+  dxl.torqueOn(DXL_ID5);
+
+  //핀 모드 지정
+  pinMode(z, INPUT_PULLUP); // 조이스틱
+  pinMode(24, INPUT_PULLUP); // 택트 스위치
+
+  //다이나믹셀 속도 값 지정(로봇 팔 1, 2번 관절 모터)
+  dxl.writeControlTableItem(PROFILE_VELOCITY, DXL_ID1, profile_velocity);
+  dxl.writeControlTableItem(PROFILE_VELOCITY, DXL_ID2, profile_velocity);
+  
+  //lcd 초기화 및 커서 지정
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+
+  //로봇 팔 초기 위치 설정
+  setting();
+}
+
+void loop() {
+  //vodka(3000);
+  //orangejuice(3000);
+  peachtree(2000);
+  cranberry(3000);
+
+  // 조이스틱 구동 코드(레시피 선택용)
+  if (analogRead(x) > 600) {  //조이스틱 오른쪽 감지
+    x_stick_state = 1;
+    delay(300);
+  }
+
+  if (analogRead(x) < 400) {  //조이스틱 왼쪽 감지
+    x_stick_state = 2;
+    delay(300);
+  }
+
+  //조이스틱이 중앙에 돌아왔을 때 조이스틱 좌우 움직임에 따라
+  //바뀐 x_stick_state값을 통해 left_right_state값을 변경
+  if (400 < analogRead(x) < 600) {
+    if (x_stick_state == 1) {
+      left_right_state++;
+      x_stick_state = 0;
+    }
+    if (x_stick_state == 2) {
+      left_right_state--;
+      x_stick_state = 0;
+    }
+  }
+
+  //lcd 출력 레시피
+  lcd.clear();
+  switch(left_right_state)
+  {
+    case 0:
+      lcd.print("Choose Recipe");
+      break;
+    case 1:
+      lcd.print("Screwdriver");
+      break;
+    case 2:
+      lcd.print("Fuzzy Navel");
+      break;
+    case 3:
+      lcd.print("Hairy Navel");
+      break;
+    case 4:
+      lcd.print("SOTB");
+      break;
+    case 5:
+      lcd.print("Cape Cod");
+      break;
+    case 6:
+      lcd.print("Woo Woo");
+      break;
+  }
+  delay(500);
+
+  //스위치 구동(선택한 레시피로 칵테일 빌드)
+  //1000(1초)를 병을 기울이는 시간으로 상정(너무 짧아서 추가한 것) --> 1초 이후부터 따르는 시간 카운트
+  if (digitalRead(sw)==0) {
+    switch(left_right_state)
+    {
+      case 0:
+        break;
+
+      //Screwdriver(v1 : o3)
+      case 1:
+        vodka(2000);
+        orangejuice(4000);
+        break;
+
+      //Fuzzy Navel(o2 : p1)
+      case 2:
+        orangejuice(3000);
+        peachtree(2000);
+        break;
+
+      //Hairy Navel(v1 : o6 : p1)
+      case 3:
+        vodka(2000);
+        orangejuice(7000);
+        peachtree(2000);
+        break;
+
+      //SOTB(v2 : o2 : p1 : c2)
+      case 4:
+        vodka(3000);
+        orangejuice(3000);
+        peachtree(2000);
+        cranberry(3000);
+        break;
+
+      //Cape Cod(v1 : c2)
+      case 5:
+        vodka(2000);
+        cranberry(3000);
+        break;
+
+      //Woo Woo(v2 : p1 : c4)
+      case 6:
+        vodka(3000);
+        peachtree(2000);
+        cranberry(5000);
+        break;
+
+    }
+  }
+}
